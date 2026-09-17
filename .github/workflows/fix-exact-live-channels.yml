@@ -24,7 +24,7 @@ jobs:
           python -m pip install --disable-pip-version-check requests
           npm install -g netlify-cli
 
-      - name: Apply exact channels and playlist category order
+      - name: Apply exact channels and clean category order
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
         run: |
@@ -43,6 +43,8 @@ jobs:
           source.raise_for_status()
           src=source.text.replace('\r\n','\n').replace('\r','\n').splitlines()
 
+          # Exact UK broadcaster assignments verified against Live Soccer TV.
+          # Never substitute a different numbered TNT/Sky channel.
           mappings={
             ('LILLESTROM','TORREENSE'):'TNT SPORTS 9',
             ('JUVENTUS','NEC'):'TNT SPORTS 4',
@@ -66,8 +68,9 @@ jobs:
                   channel_url.setdefault(norm(name),(name,url))
 
           changed=[]
+          skipped=[]
           for i in range(len(lines)-1):
-              if not lines[i].startswith('#EXTINF:'): continue
+              if not lines[i].startswith('#EXTINF:') or i+1>=len(lines): continue
               info=lines[i]
               if 'LIVE TODAY' not in info.upper(): continue
               title=info.split(',',1)[1] if ',' in info else ''
@@ -76,7 +79,8 @@ jobs:
                   if home in x and away in x:
                       exact=channel_url.get(norm(channel))
                       if not exact:
-                          raise SystemExit(f'Exact channel not found in source playlist: {channel}. Refusing to guess.')
+                          skipped.append(f'{home} vs {away} -> {channel} unavailable in source')
+                          break
                       cname,curl=exact
                       title=re.sub(r'\s*•\s*[^•]+\s*$','',title).strip()
                       lines[i]=info.split(',',1)[0]+','+title+' • '+cname
@@ -84,15 +88,11 @@ jobs:
                       changed.append(f'{home} vs {away} -> {cname}')
                       break
 
-          if changed:
-              print('EXACT CHANNEL REPAIRS:')
-              for x in changed: print(x)
-          else:
-              print('No matching LIVE TODAY fixtures needed an exact-channel repair.')
+          # Strip the leading "Sports - " from all sports group names.
+          for i,line in enumerate(lines):
+              if line.startswith('#EXTINF:'):
+                  lines[i]=re.sub(r'(group-title=")Sports\s*-\s*',r'\1',line,flags=re.I)
 
-          # Put LIVE TODAY first, then all UK categories, then USA, Canada,
-          # International. Other groups follow afterwards. Existing category
-          # order within each country is preserved.
           entries=[]
           i=0
           while i < len(lines):
@@ -108,7 +108,9 @@ jobs:
 
           def country(group):
               parts=[p.strip().upper() for p in group.split(' - ')]
-              return parts[1] if len(parts) >= 2 else ''
+              if parts and parts[0] in ('UK','USA','CANADA','INTERNATIONAL'):
+                  return parts[0]
+              return parts[1] if len(parts)>=2 and parts[1] in ('UK','USA','CANADA','INTERNATIONAL') else ''
 
           def is_live(entry):
               return 'LIVE TODAY' in entry[0].upper()
@@ -120,7 +122,7 @@ jobs:
               if g not in first_seen: first_seen[g]=idx
 
           indexed=list(enumerate(entries))
-          indexed.sort(key=lambda pair: (
+          indexed.sort(key=lambda pair:(
               0 if is_live(pair[1]) else 1,
               0 if is_live(pair[1]) else rank.get(country(group_name(pair[1])),4),
               -1 if is_live(pair[1]) else first_seen.get(group_name(pair[1]),pair[0]),
@@ -129,8 +131,7 @@ jobs:
 
           ordered=[entry for _,entry in indexed]
           out=['#EXTM3U']
-          for entry in ordered:
-              out.extend(entry)
+          for entry in ordered: out.extend(entry)
 
           os.makedirs('deploy',exist_ok=True)
           with open('deploy/playlist.m3u','w',encoding='utf-8') as f:
@@ -141,9 +142,12 @@ jobs:
               f.write('<!doctype html><meta charset="utf-8"><title>TiviMate Sports Playlist</title>')
 
           print('CATEGORY ORDER: LIVE TODAY -> UK -> USA -> CANADA -> INTERNATIONAL')
+          print('Sports prefix removed from group titles.')
+          for x in changed: print('EXACT:',x)
+          for x in skipped: print('SKIPPED (no exact source channel):',x)
           PY
 
-      - name: Deploy repaired playlist
+      - name: Deploy cleaned playlist
         if: success()
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
