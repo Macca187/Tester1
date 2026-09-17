@@ -56,6 +56,21 @@ jobs:
             s=re.sub(r'[^A-Z0-9+]+',' ',s)
             return re.sub(r'\\s+',' ',s).strip()
 
+          def sports_group(group):
+            g=html.unescape(group or '').upper()
+            # Keep only groups that are clearly sports-oriented.
+            sports_terms=(
+              'SPORT', 'SOCCER', 'ESPN', 'DAZN', 'TSN', 'SPORTSNET', 'FLO ',
+              'BALLY SPORTS', 'MATCHROOM', 'MILB', 'MLB', 'NBA', 'NFL', 'NHL',
+              'WNBA', 'NCAAB', 'NCAAF', 'CFL', 'NRL', 'AFL', 'UEFA', 'FIFA',
+              'UFC', 'SUPERCROSS', 'TENNIS', 'GOLF', 'RUGBY', 'F1', 'MOTORSPORT',
+              'MASTERS', 'WST', 'PEACOCK PPV', 'STAN PPV', 'VIAPLAY NHL',
+              'PPV EVENT', 'CANADA WEST PPV', 'CBC PPV', 'VICTORY+ PPV',
+              'BTN+ PPV', 'FIFA+ PPV', 'MAX PPV', 'PARAMOUNT+ PPV',
+              'PRIME VIDEO PPV', 'NFHS PPV', 'PPV EVENT', 'APPLE TV F1'
+            )
+            return any(t in g for t in sports_terms)
+
           def bad_channel(display):
             n=norm(display)
             return ('ORIGINAL INFO' in n or n.startswith('INFO ') or n.startswith('(FLSP') or ' FLSP ' in f' {n} ')
@@ -66,10 +81,12 @@ jobs:
             if lines[i].startswith('#EXTINF:') and i+1<len(lines):
               info,url=lines[i],lines[i+1]
               if 'group-title="🔴 LIVE TODAY"' not in info and url.startswith(('http://','https://')):
+                gm=re.search(r'group-title="([^"]*)"',info)
+                group=gm.group(1) if gm else ''
                 display=info.split(',',1)[1] if ',' in info else ''
-                if not bad_channel(display):
+                if sports_group(group) and not bad_channel(display):
                   n=norm(display)
-                  if n: entries.append((n,display,url))
+                  if n: entries.append((n,display,url,group))
               i+=2
             else:
               i+=1
@@ -88,12 +105,10 @@ jobs:
 
           def region_rank(display):
             d=(display or '').upper().strip()
-            # UK is preferred. Regional labels are used for the fallback pool.
             if re.match(r'^(UK\\s*[|:]|UK -)',d):
               return 0
             if re.match(r'^(US\\s*[|:]|US -|CA(?: EN| FR)?\\s*[|:]|CA -|AU\\s*[|:]|AU -)',d):
               return 1
-            # The base playlist is UK-first, so an unlabelled exact channel is treated as UK.
             if not re.match(r'^(?:[A-Z]{2}(?: EN| FR)?\\s*[|:]|[A-Z]{2} -)',d):
               return 0
             return 2
@@ -116,7 +131,7 @@ jobs:
                 continue
               seen_hints.add(target)
               hn=channel_number(target)
-              for dn,display,url in entries:
+              for dn,display,url,group in entries:
                 if bad_channel(display) or dn != target:
                   continue
                 if hn and channel_number(dn) != hn:
@@ -125,9 +140,6 @@ jobs:
 
             if not candidates:
               return None
-
-            # First use a UK exact channel. Only if none exists, use an AU/CA/US exact channel.
-            # Never fall back to another numbered channel or to an unrelated broadcaster.
             candidates.sort(key=lambda x:(x[0], entries.index(next(e for e in entries if e[1]==x[1]))))
             best=candidates[0]
             if best[0] > 1:
@@ -201,6 +213,14 @@ jobs:
             if lines[i].strip()=='# --- AUTO-GENERATED LIVE SPORTS ---':
               i+=1
               continue
+            # Non-sports groups were filtered out when entries were parsed, so rebuild from sports entries only.
+            if lines[i].startswith('#EXTINF:') and i+1<len(lines):
+              info,url=lines[i],lines[i+1]
+              gm=re.search(r'group-title="([^"]*)"',info)
+              group=gm.group(1) if gm else ''
+              if not sports_group(group):
+                i+=2
+                continue
             out.append(lines[i])
             i+=1
           if not inserted:
@@ -213,7 +233,8 @@ jobs:
           open('deploy/index.html','w',encoding='utf-8').write('<!doctype html><title>TiviMate Playlist</title>')
 
           print(f'Created {len(selected)} live football events from Live Soccer TV.')
-          print('Channel priority: UK exact match -> AU/CA/US exact match -> otherwise omit.')
+          print('Sports-only groups enabled. Channel priority: UK exact match -> AU/CA/US exact match -> otherwise omit.')
+          print(f'Kept {len(entries)} sports-group channels from the existing playlist.')
           for dt,title,display,url,source_name in selected[:30]:
             print(f'  {dt:%H:%M} | {title} | {display}')
           PY
