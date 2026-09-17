@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  PLAYLIST_URL: https://nimble-gnome-675066.netlify.app/playlist.m3u
+  PLAYLIST_URL: https://uk-tivimate-playlist.netlify.app/playlist.m3u
   NETLIFY_SITE_ID: 34ea0489-94c2-47e6-98dc-2be3abab17dd
 
 jobs:
@@ -26,6 +26,7 @@ jobs:
       - name: Build clean sports playlist safely
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          XTREAM_PLAYLIST_URL: ${{ secrets.XTREAM_PLAYLIST_URL }}
         run: |
           python - <<'PY'
           import os,re,html,sys
@@ -35,97 +36,102 @@ jobs:
           from bs4 import BeautifulSoup
 
           H={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36','Accept-Language':'en-GB,en;q=0.9'}
-          r=requests.get(os.environ['PLAYLIST_URL'],headers=H,timeout=90); r.raise_for_status()
-          text=r.text.replace('\\r\\n','\\n').replace('\\r','\\n'); lines=text.splitlines()
+          source=os.environ.get('XTREAM_PLAYLIST_URL','').strip() or os.environ['PLAYLIST_URL']
+          r=requests.get(source,headers=H,timeout=90); r.raise_for_status()
+          lines=r.text.replace('\r\n','\n').replace('\r','\n').splitlines()
 
           SPORTS=('SPORT','SOCCER','FOOTBALL','ESPN','DAZN','TSN','SPORTSNET','FLO SPORTS','FOX SPORTS','SKY SPORTS','TNT SPORTS','BEIN SPORTS','PREMIER SPORTS','BALLY SPORTS','MATCHROOM','NBA','NFL','NHL','MLB','MLS','WNBA','NCAAB','NCAAF','CFL','NRL','AFL','UEFA','FIFA','UFC','WWE','SUPERCROSS','TENNIS','GOLF','RUGBY','CRICKET','F1','FORMULA 1','MOTORSPORT','RACING','WST','SNOOKER','DARTS','OLYMPIC','OLYMPICS','STAN SPORT','WORLD CRICKET','MOTOGP','BOXING','FIGHT','EQUESTRIAN','HORSE RACING','SPORT TV')
-          BAD=('ORIGINAL INFO','CHANNEL INFO','NO SIGNAL','TEST CHANNEL','TRAILER','HIGHLIGHTS','REPLAY','VOD')
+          BAD=('ORIGINAL INFO','CHANNEL INFO','NO SIGNAL','TEST CHANNEL','TRAILER','HIGHLIGHTS','REPLAY','VOD','FLSP')
           def norm(s):
-            s=html.unescape(s or '').upper()
-            s=re.sub(r'[ᴴᴰᴿᴬᵂᵁᴴᴰᵀᴹ]+',' ',s)
-            s=re.sub(r'\\b(HEVC|8K|4K|SD|HD|EVENT|EXCLUSIVE|ULTRA HDR)\\b',' ',s)
-            return re.sub(r'\\s+',' ',re.sub(r'[^A-Z0-9+]+',' ',s)).strip()
+              s=html.unescape(s or '').upper()
+              s=re.sub(r'[ᴴᴰᴿᴬᵂᵁᴴᴰᵀᴹ]+',' ',s)
+              s=re.sub(r'\b(HEVC|8K|4K|SD|HD|EVENT|EXCLUSIVE|ULTRA HDR)\b',' ',s)
+              return re.sub(r'\s+',' ',re.sub(r'[^A-Z0-9+]+',' ',s)).strip()
           def is_sport(g,n): return any(x in norm(g+' '+n) for x in SPORTS)
           def bad(n):
-            x=norm(n); return any(x.startswith(y) or y in x for y in BAD) or ' FLSP ' in ' '+x+' '
+              x=norm(n); return any(x.startswith(y) or y in x for y in BAD)
           def country(g,n):
-            s=html.unescape(g+' '+n)
-            m=re.search(r'(?<![A-Z])(UK|US|CA|AU)(?:\\s+(?:EN|FR))?(?=\\s*[|:-])',s,re.I)
-            if m:return {'UK':'UK','US':'USA','CA':'Canada','AU':'Australia'}[m.group(1).upper()]
-            return 'International'
+              s=html.unescape(g+' '+n)
+              m=re.search(r'(?<![A-Z])(UK|US|CA|AU)(?:\s+(?:EN|FR))?(?=\s*[|:-])',s,re.I)
+              return {'UK':'UK','US':'USA','CA':'Canada','AU':'Australia'}.get(m.group(1).upper(),'International') if m else 'International'
           def sport_type(g,n):
-            x=norm(g+' '+n)
-            for label,terms in [('Football',('SOCCER','FOOTBALL','UEFA','FIFA','MLS','NWSL','FOX SOCCER')),('Basketball',('NBA','WNBA','NCAAB')),('American Football',('NFL','NCAAF','CFL')),('Ice Hockey',('NHL',)),('Baseball',('MLB',)),('Rugby',('RUGBY','NRL','AFL')),('Cricket',('CRICKET',)),('Tennis',('TENNIS',)),('Golf',('GOLF',)),('Motorsport',('F1','FORMULA 1','MOTORSPORT','MOTOGP','SUPERCROSS')),('Boxing & MMA',('BOXING','UFC','FIGHT')),('Wrestling',('WWE',)),('Darts & Snooker',('DARTS','SNOOKER','WST')),('Horse Racing',('HORSE RACING','EQUESTRIAN'))]:
-              if any(t in x for t in terms): return label
-            return 'Sports'
+              x=norm(g+' '+n)
+              groups=[('Football',('SOCCER','FOOTBALL','UEFA','FIFA','MLS','NWSL','FOX SOCCER')),('Basketball',('NBA','WNBA','NCAAB')),('American Football',('NFL','NCAAF','CFL')),('Ice Hockey',('NHL',)),('Baseball',('MLB',)),('Rugby',('RUGBY','NRL','AFL')),('Cricket',('CRICKET',)),('Tennis',('TENNIS',)),('Golf',('GOLF',)),('Motorsport',('F1','FORMULA 1','MOTORSPORT','MOTOGP','SUPERCROSS')),('Boxing & MMA',('BOXING','UFC','FIGHT')),('Wrestling',('WWE',)),('Darts & Snooker',('DARTS','SNOOKER','WST')),('Horse Racing',('HORSE RACING','EQUESTRIAN'))]
+              for label,terms in groups:
+                  if any(t in x for t in terms): return label
+              return 'Sports'
 
           entries=[]; live_old=[]; i=0
           while i<len(lines):
-            if lines[i].startswith('#EXTINF:') and i+1<len(lines):
-              info,url=lines[i],lines[i+1].strip(); gm=re.search(r'group-title="([^"]*)"',info); g=gm.group(1) if gm else ''; n=info.split(',',1)[1].strip() if ',' in info else ''
-              if url.startswith(('http://','https://')):
-                if 'LIVE TODAY' in g.upper(): live_old.append((info,url))
-                elif is_sport(g,n) and not bad(n): entries.append((n,url,g))
-              i+=2
-            else:i+=1
-
-          # Never deploy an empty/near-empty result.
-          if len(entries)<100:
-            print(f'SAFETY STOP: only {len(entries)} sports channels found. Existing playlist will not be replaced.')
-            sys.exit(1)
+              if lines[i].startswith('#EXTINF:') and i+1<len(lines):
+                  info,url=lines[i],lines[i+1].strip()
+                  gm=re.search(r'group-title="([^"]*)"',info); g=gm.group(1) if gm else ''
+                  n=info.split(',',1)[1].strip() if ',' in info else ''
+                  if url.startswith(('http://','https://')):
+                      if 'LIVE TODAY' in g.upper(): live_old.append((info,url))
+                      elif is_sport(g,n) and not bad(n): entries.append((n,url,g))
+                  i+=2
+              else: i+=1
 
           unique={}
-          for e in entries: unique.setdefault(e[1],e)
+          for n,url,g in entries: unique.setdefault(url,(n,url,g))
           entries=list(unique.values())
+          print('SPORT CHANNELS:',len(entries))
+          if len(entries)<100:
+              print('SAFETY STOP: source did not contain enough sports channels; nothing will be deployed.')
+              sys.exit(1)
 
-          # Try Live Soccer TV. If it blocks automation, retain the previous LIVE TODAY block rather than deleting it.
-          events=[]; today=datetime.now(ZoneInfo('Europe/London')).date()
+          events=[]
+          today=datetime.now(ZoneInfo('Europe/London')).date()
           try:
-            u=f'https://www.livesoccertv.com/schedules/{today:%Y-%m-%d}/'
-            sr=requests.get(u,headers=H,timeout=60); sr.raise_for_status()
-            soup=BeautifulSoup(sr.text,'html.parser')
-            rows=soup.select('tr')
-            for el in rows:
-              row=' '.join(el.stripped_strings); tm=re.search(r'\\b([01]?\\d|2[0-3]):([0-5]\\d)\\b',row)
-              if not tm: continue
-              hhmm=tm.group(0); anchors=[a.get_text(' ',strip=True) for a in el.find_all('a')]
-              wanted=[]
-              for x in anchors+[row]: wanted += re.findall(r'(?:TNT SPORTS(?: \\d+)?|SKY SPORTS(?:\\+| FOOTBALL| GOLF| MAIN EVENT| PREMIER LEAGUE| ARENA| ACTION| TENNIS)?|ESPN(?: \\d+)?|ESPN\\+|TSN(?: \\d+)?|SPORTSNET(?: \\d+)?|FOX SPORTS(?: \\d+)?|FOX SOCCER PLUS|CBS SPORTS NETWORK|DAZN(?: UK| USA| CANADA)?|BEIN SPORTS(?: \\d+)?|PREMIER SPORTS(?: \\d+)?|STAN SPORT|WST PLAY|HBO MAX|JIOHOTSTAR|NWSL\\+|PARAMOUNT\\+|NBC SPORTS|USA NETWORK|PEACOCK|TELEMUNDO|UNIVERSO|APPLE TV\\+|FUBO(?:TV)?)',x.upper())
-              wanted=list(dict.fromkeys(wanted))
-              picked=None
-              for w in wanted:
-                target=norm(w)
-                cand=[]
-                for n,url,g in entries:
-                  if norm(n)!=target: continue
-                  c=country(g,n); rank=0 if c=='UK' else 1 if c in ('Australia','Canada','USA') else 9
-                  if rank<9:cand.append((rank,n,url))
-                if cand: picked=sorted(cand,key=lambda x:x[0])[0]; break
-              if not picked: continue
-              title=row
-              title=re.sub(r'\\b([01]?\\d|2[0-3]):[0-5]\\d\\b','',title)
-              for w in wanted:title=re.sub(re.escape(w),'',title,flags=re.I)
-              title=re.sub(r'\\s+',' ',title).strip(' -|')
-              if not title or len(title)>180:continue
-              h,m=map(int,hhmm.split(':')); dt=datetime(today.year,today.month,today.day,h,m,tzinfo=ZoneInfo('America/New_York')).astimezone(ZoneInfo('Europe/London'))
-              events.append((dt,title,picked[1],picked[2]))
-          except Exception as e: print('Live Soccer TV unavailable:',e)
+              u=f'https://www.livesoccertv.com/schedules/{today:%Y-%m-%d}/'
+              sr=requests.get(u,headers=H,timeout=60); sr.raise_for_status()
+              soup=BeautifulSoup(sr.text,'html.parser')
+              for el in soup.select('tr'):
+                  row=' '.join(el.stripped_strings)
+                  tm=re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b',row)
+                  if not tm: continue
+                  wanted=[]
+                  for x in [row]+[a.get_text(' ',strip=True) for a in el.find_all('a')]:
+                      wanted += re.findall(r'(?:TNT SPORTS(?: \d+)?|SKY SPORTS(?:\+| FOOTBALL| GOLF| MAIN EVENT| PREMIER LEAGUE| ARENA| ACTION| TENNIS)?|ESPN(?: \d+)?|ESPN\+|TSN(?: \d+)?|SPORTSNET(?: \d+)?|FOX SPORTS(?: \d+)?|FOX SOCCER PLUS|CBS SPORTS NETWORK|DAZN(?: UK| USA| CANADA)?|BEIN SPORTS(?: \d+)?|PREMIER SPORTS(?: \d+)?|STAN SPORT)',x.upper())
+                  wanted=list(dict.fromkeys(wanted))
+                  picked=None
+                  for w in wanted:
+                      cand=[]
+                      for n,url,g in entries:
+                          if norm(n)==norm(w):
+                              c=country(g,n); rank={'UK':0,'Australia':1,'Canada':2,'USA':3}.get(c,9)
+                              if rank<9: cand.append((rank,n,url,g))
+                      if cand:
+                          picked=min(cand,key=lambda z:z[0]); break
+                  if not picked: continue
+                  title=row
+                  title=re.sub(r'\b([01]?\d|2[0-3]):[0-5]\d\b','',title)
+                  for w in wanted: title=re.sub(re.escape(w),'',title,flags=re.I)
+                  title=re.sub(r'\s+',' ',title).strip(' -|')
+                  if not title or len(title)>180: continue
+                  h,m=map(int,tm.group(0).split(':'))
+                  dt=datetime(today.year,today.month,today.day,h,m,tzinfo=ZoneInfo('Europe/London'))
+                  events.append((dt,title,picked[1],picked[2]))
+          except Exception as e:
+              print('Live Soccer TV unavailable:',e)
 
           out=['#EXTM3U']
           if events:
-            for dt,title,n,url in sorted(events,key=lambda x:x[0]): out += [f'#EXTINF:-1 group-title="🔴 LIVE TODAY",{dt:%H:%M} • {title} • {n}',url]
+              for dt,title,n,g in sorted(events,key=lambda z:z[0]):
+                  out += [f'#EXTINF:-1 group-title="🔴 LIVE TODAY",{dt:%H:%M} • {title} • {n}', next(url for nn,url,gg in entries if nn==n and gg==g)]
           else:
-            # Preserve the last known LIVE TODAY entries when the schedule site blocks GitHub Actions.
-            out += [x for pair in live_old for x in pair]
+              out += [x for pair in live_old for x in pair]
 
-          for n,url,g in sorted(entries,key=lambda e:(country(e[2],e[0]),sport_type(e[2],e[0]),norm(e[0]))):
-            out += [f'#EXTINF:-1 group-title="Sports - {country(g,n)} - {sport_type(g,n)}",{n}',url]
+          for n,url,g in sorted(entries,key=lambda z:(country(z[2],z[0]),sport_type(z[2],z[0]),norm(z[0]))):
+              out += [f'#EXTINF:-1 group-title="Sports - {country(g,n)} - {sport_type(g,n)}",{n}',url]
 
           os.makedirs('deploy',exist_ok=True)
-          open('deploy/playlist.m3u','w',encoding='utf-8',newline='\\n').write('\\n'.join(out)+'\\n')
-          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\\n  Content-Type: text/plain; charset=utf-8\\n')
-          open('deploy/index.html','w',encoding='utf-8').write('<!doctype html><meta charset="utf-8"><title>TiviMate Sports Playlist</title>')
-          print('SPORT CHANNELS:',len(entries)); print('LIVE TODAY:',len(events) if events else len(live_old)); print('OUTPUT: clean UTF-8 sports M3U')
+          with open('deploy/playlist.m3u','w',encoding='utf-8') as f: f.write('\n'.join(out)+'\n')
+          with open('deploy/_headers','w',encoding='utf-8') as f: f.write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
+          with open('deploy/index.html','w',encoding='utf-8') as f: f.write('<!doctype html><meta charset="utf-8"><title>TiviMate Sports Playlist</title>')
+          print('LIVE TODAY:',len(events) if events else len(live_old))
+          print('OUTPUT: clean UTF-8 sports M3U')
           PY
 
       - name: Deploy updated playlist to Netlify
