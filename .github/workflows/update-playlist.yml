@@ -13,7 +13,7 @@ permissions:
 
 env:
   PLAYLIST_URL: https://nimble-gnome-675066.netlify.app/playlist.m3u
-  NETLIFY_SITE_ID: 7c0f8515-4491-4a5b-a20b-792cf83477d1
+  NETLIFY_SITE_ID: 34ea0489-94c2-47e6-98dc-2be3abab17dd
 
 jobs:
   update:
@@ -88,12 +88,10 @@ jobs:
           def find_channel(row_text,anchors):
             row=norm(row_text)
             ans=[norm(a) for a in anchors if norm(a)]
-            # Broadcaster names only; event/team anchors must not be used as channel names.
             hints=[]
             for a in ans:
               if any(k in a for k in ('TNT SPORTS','SKY SPORTS','ESPN','TSN','SPORTSNET','FOX SPORTS','CBS SPORTS','DAZN','BEIN SPORTS','PREMIER SPORTS','STAN SPORT','HBO MAX','WST PLAY','JIOHOTSTAR','NWSL+')):
                 hints.append(a)
-            # Also inspect the complete row for known broadcaster phrases.
             known=re.findall(r'(?:TNT SPORTS(?: \d+)?|SKY SPORTS(?:\+| FOOTBALL| GOLF| CRICKET)?|ESPN(?: \d+)?|TSN(?: \d+)?|SPORTSNET(?: \d+)?|FOX SPORTS(?: \d+)?|CBS SPORTS NETWORK|DAZN|BEIN SPORTS(?: \d+)?|PREMIER SPORTS(?: \d+)?|STAN SPORT|WST PLAY|HBO MAX|JIOHOTSTAR|NWSL\+)',row)
             hints += [x for x in known if x not in hints]
             candidates=[]
@@ -104,9 +102,8 @@ jobs:
                 if bad_channel(display): continue
                 dn=norm(display)
                 if dn==target:
-                  score=10000+len(dn)
                   if hn and channel_number(dn)!=hn: continue
-                  candidates.append((score,display,url))
+                  candidates.append((10000+len(dn),display,url))
                 elif target and (dn.startswith(target+' ') or dn==target or target in dn):
                   if hn and channel_number(dn) and channel_number(dn)!=hn: continue
                   score=7000+len(target)
@@ -123,12 +120,10 @@ jobs:
               x=a.strip()
               if not x: continue
               if norm(x)==norm(display): break
-              if re.search(r'\s+(v|vs|@)\s+',x,re.I):
-                teams.append(x)
+              if re.search(r'\s+(v|vs|@)\s+',x,re.I): teams.append(x)
             if teams: return teams[0]
             x=re.sub(r'\b'+re.escape(hhmm)+r'\b','',row,flags=re.I)
-            x=re.sub(r'\s+',' ',x).strip()
-            return x
+            return re.sub(r'\s+',' ',x).strip()
 
           now=datetime.now(ZoneInfo('Europe/London'))
           today=now.date()
@@ -178,7 +173,6 @@ jobs:
           for dt,title,display,url,source_name in selected:
             live += [f'#EXTINF:-1 group-title="🔴 LIVE TODAY",{dt:%H:%M} • {title} • {display}',url]
 
-          # Completely remove every old LIVE TODAY entry before inserting today's block.
           out=[]
           i=0
           inserted=False
@@ -187,13 +181,13 @@ jobs:
               if not inserted:
                 out.extend(live)
                 inserted=True
-              i += 2
+              i+=2
               continue
             if lines[i].strip()=='# --- AUTO-GENERATED LIVE SPORTS ---':
-              i += 1
+              i+=1
               continue
             out.append(lines[i])
-            i += 1
+            i+=1
           if not inserted:
             pos=1 if out and out[0].startswith('#EXTM3U') else 0
             out[pos:pos]=live+['']
