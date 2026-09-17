@@ -1,0 +1,16 @@
+name: Update TiviMate playlist
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 16 * * *'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: |
+          echo 'The daily playlist source/update step will run here.'
+          echo 'This workflow is ready for the playlist generation script.'
