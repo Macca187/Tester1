@@ -2,6 +2,8 @@ name: Fix verified LIVE TODAY broadcaster mappings
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
   schedule:
     - cron: '10 * * * *'
 
@@ -61,7 +63,6 @@ jobs:
               title=info.split(',',1)[1] if ',' in info else ''
               x=norm(title)
               if 'VIKTORIA PLZEN' in x and 'UNION SAINT GILLOISE' in x:
-                  # Keep the event title/time, but force the broadcaster label and stream URL.
                   title=re.sub(r'\s*•\s*[^•]+\s*$','',title).strip()
                   prefix=info.split(',',1)[0]
                   lines[i]=prefix+','+title+' • TNT Sports 8'
