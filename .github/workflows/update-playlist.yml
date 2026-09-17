@@ -9,8 +9,30 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Placeholder
+      - name: Download current playlist
         run: |
-          echo 'The daily playlist source/update step will run here.'
-          echo 'This workflow is ready for the playlist generation script.'
+          set -euo pipefail
+          curl -fsSL 'https://nimble-gnome-675066.netlify.app/playlist.m3u' -o playlist.m3u
+          test -s playlist.m3u
+
+      - name: Prepare Netlify deploy
+        run: |
+          set -euo pipefail
+          mkdir deploy
+          cp playlist.m3u deploy/playlist.m3u
+          printf '%s\n' '<!doctype html><html><body></body></html>' > deploy/index.html
+          cd deploy
+          zip -q ../site.zip playlist.m3u index.html
+
+      - name: Deploy playlist to Netlify
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: 7c0f8515-4491-4a5b-a20b-792cf83477d1
+        run: |
+          set -euo pipefail
+          test -n "$NETLIFY_AUTH_TOKEN"
+          curl --fail-with-body -X POST \
+            -H "Authorization: Bearer $NETLIFY_AUTH_TOKEN" \
+            -H 'Content-Type: application/zip' \
+            --data-binary @site.zip \
+            "https://api.netlify.com/api/v1/sites/$NETLIFY_SITE_ID/deploys"
