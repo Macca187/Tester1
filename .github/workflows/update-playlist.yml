@@ -36,141 +36,208 @@ jobs:
           from bs4 import BeautifulSoup
 
           H={
-              'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36',
+              'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
               'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
               'Accept-Language':'en-GB,en;q=0.9'
           }
-          r=requests.get(os.environ['PLAYLIST_URL'],headers=H,timeout=60); r.raise_for_status()
-          text=r.text.replace('\\r\\n','\\n').replace('\\r','\\n'); lines=text.split('\\n')
+
+          r=requests.get(os.environ['PLAYLIST_URL'],headers=H,timeout=60)
+          r.raise_for_status()
+          text=r.text.replace('\r\n','\n').replace('\r','\n')
+          lines=text.split('\n')
 
           def norm(s):
               s=html.unescape(s or '').upper()
               s=s.replace('ᴴᴰ',' ').replace('ᴿᴬᵂ',' ').replace('ᵁᴴᴰ',' ')
-              # Remove regional/provider prefixes so AU: ESPN 1 HD, CA| TSN 1, etc.
-              s=re.sub(r'\\b(?:UK|US|CA|AU)\\s*[:|]\\s*',' ',s)
-              s=re.sub(r'\\b(?:HEVC|4K|UHD|SD|HD|IRELAND|EVENT)\\b',' ',s)
-              s=re.sub(r'\\b(?:NOW|PRIME|VIP)\\s*[:|]',' ',s)
+              s=re.sub(r'\b(HEVC|8K|4K|SD|HD|IRELAND|EVENT|EXCLUSIVE)\b',' ',s)
+              s=re.sub(r'\b(NOW|PRIME|VIP|UK|US|CA|AU):',' ',s)
+              s=re.sub(r'^\s*(CA EN|CA FR)\s*:\s*',' ',s)
+              s=re.sub(r'^\s*(US|AU)\s*(\|)\s*',' ',s)
               s=re.sub(r'[^A-Z0-9+]+',' ',s)
-              return re.sub(r'\\s+',' ',s).strip()
+              return re.sub(r'\s+',' ',s).strip()
 
-          entries=[]; i=0
+          entries=[]
+          i=0
           while i<len(lines):
               if lines[i].startswith('#EXTINF:') and i+1<len(lines):
                   info,url=lines[i],lines[i+1]
-                  if 'group-title="🔴 LIVE TODAY"' not in info:
+                  if 'group-title="🔴 LIVE TODAY"' not in info and url.startswith(('http://','https://')):
                       display=info.split(',',1)[1] if ',' in info else ''
                       n=norm(display)
-                      if n: entries.append((n,display,url))
+                      if n:
+                          entries.append((n,display,url))
                   i+=2
-              else: i+=1
-
-          # Prefer more specific channel names and exact matches.
+              else:
+                  i+=1
           entries.sort(key=lambda x:-len(x[0]))
 
           aliases={
               'FOX SPORTS 1':'FOX SPORTS 1',
               'FOX SPORTS 2':'FOX SPORTS 2',
-              'ESPN 1':'ESPN 1',
+              'FOX SOCCER PLUS':'FOX SOCCER PLUS',
+              'CBS SPORTS NETWORK':'CBS SPORTS NETWORK',
+              'ESPN2':'ESPN 2',
               'ESPN 2':'ESPN 2',
-              'TSN 1':'TSN 1','TSN 2':'TSN 2','TSN 3':'TSN 3','TSN 4':'TSN 4','TSN 5':'TSN 5',
-              'SPORTSNET':'SPORTSNET',
-              'SPORTSNET ONE':'SPORTSNET ONE',
-              'SPORTSNET ONTARIO':'SPORTSNET ONTARIO',
-              'SPORTSNET WEST':'SPORTSNET WEST',
-              'SPORTSNET PACIFIC':'SPORTSNET PACIFIC',
-              'SPORTSNET EAST':'SPORTSNET EAST',
+              'ESPN':'ESPN',
+              'TSN PREMIUM':'TSN',
+              'TSN':'TSN',
+              'DAZN USA':'DAZN',
+              'DAZN CANADA':'DAZN',
+              'BEIN SPORTS':'BEIN SPORTS',
+              'STAN SPORT':'STAN SPORT',
+              'FOX SPORTS AUSTRALIA':'FOX SPORTS',
           }
 
-          def find_channel(row_text,anchors):
-              ans={norm(a) for a in anchors if norm(a)}
-              row=norm(row_text)
-              # Exact anchor match first.
-              for n,display,url in entries:
-                  if n in ans: return display,url
-              # Exact aliases next.
-              for alias in aliases:
-                  if alias in ans:
-                      for n,display,url in entries:
-                          if n==norm(alias): return display,url
-              # Whole-name match against the row.
-              for n,display,url in entries:
-                  if len(n)>=5 and re.search(r'(?<![A-Z0-9])'+re.escape(n)+r'(?![A-Z0-9])',row):
-                      return display,url
-              # Finally, broadcaster contained in channel name or vice versa, but only for distinctive names.
-              for a in ans:
-                  if len(a)<5: continue
-                  for n,display,url in entries:
-                      if (a in n or n in a) and len(min(a,n,key=len))>=5:
-                          return display,url
+          def region_hint(s):
+              x=norm(s)
+              if 'CANADA' in x or x.startswith('TSN') or 'SPORTSNET' in x or 'ONESOCCER' in x:
+                  return 'CA'
+              if 'AUSTRALIA' in x or x.startswith('ESPN AU'):
+                  return 'AU'
+              if any(k in x for k in ['USA','TUDN','CBS SPORTS','FOX SPORTS','ESPN','NBC','TBS','TNT USA']):
+                  return 'US'
               return None
 
+          def find_channel(row_text,anchors):
+              candidates=[]
+              ans=[norm(a) for a in anchors if norm(a)]
+              row=norm(row_text)
+
+              for an in ans:
+                  for n,display,url in entries:
+                      if n==an:
+                          candidates.append((10000+len(n),display,url))
+                  target=aliases.get(an,an)
+                  if target:
+                      for n,display,url in entries:
+                          if target in n or n==target:
+                              score=7000+len(target)
+                              if 'PPV' in n and 'PPV' not in an:
+                                  score-=1000
+                              candidates.append((score,display,url))
+
+              for n,display,url in entries:
+                  if len(n)>=5 and re.search(r'(?<![A-Z0-9])'+re.escape(n)+r'(?![A-Z0-9])',row):
+                      candidates.append((5000+len(n),display,url))
+
+              if not candidates:
+                  return None
+
+              hint=region_hint(' '.join(anchors))
+              if hint:
+                  regional=[]
+                  for score,display,url in candidates:
+                      dn=norm(display)
+                      if hint=='CA' and (dn.startswith('CA EN') or dn.startswith('CA FR') or 'TSN' in dn or 'SPORTSNET' in dn):
+                          score+=2500
+                      elif hint=='AU' and ('AUSTRALIA' in dn or 'ESPN 1' in dn or 'FOX SPORTS 50' in dn or 'BEIN SPORTS' in dn):
+                          score+=2500
+                      elif hint=='US' and ('US ' in dn or dn.startswith(('ESPN','FOX SPORTS','CBS SPORTS','NBC','TBS','TNT'))):
+                          score+=2500
+                      regional.append((score,display,url))
+                  candidates=regional
+
+              candidates.sort(key=lambda x:-x[0])
+              return candidates[0][1],candidates[0][2]
+
           def title_from(anchors,display,row_text,time):
-              bn=norm(display); parts=[]
+              bn=norm(display)
+              parts=[]
               for a in anchors:
                   an=norm(a)
-                  if an==bn: break
-                  if a and an!=norm(time) and a not in parts: parts.append(a)
-              if parts: return re.sub(r'\\s+',' ',' v '.join(parts[:2])).strip()
-              x=re.sub(r'\\b'+re.escape(time)+r'\\b',' ',row_text)
-              return re.sub(r'\\s+',' ',x).strip()
+                  if an==bn:
+                      break
+                  if a and an!=norm(time) and a not in parts:
+                      parts.append(a)
+              if parts:
+                  return re.sub(r'\s+',' ',' v '.join(parts[:2])).strip()
+              x=re.sub(r'\b'+re.escape(time)+r'\b',' ',row_text)
+              return re.sub(r'\s+',' ',x).strip()
 
-          now=datetime.now(ZoneInfo('Europe/London')); events=[]
+          now=datetime.now(ZoneInfo('Europe/London'))
+          today=now.date()
+          events=[]
+
           sources=[
-              'https://www.wheresthematch.com/',
-              'https://tv-guide-listings.co.uk/sport/',
-              'https://www.whatsportson.com/'
+              ('wheresthematch','https://www.wheresthematch.com/','Europe/London'),
+              ('tv-guide','https://tv-guide-listings.co.uk/sport/','Europe/London'),
+              ('live-soccer-tv',f'https://www.livesoccertv.com/schedules/{today:%Y-%m-%d}/','America/New_York'),
           ]
 
-          for source in sources:
+          for source_name,source,source_tz in sources:
               try:
-                  sr=requests.get(source,headers=H,timeout=60); sr.raise_for_status()
+                  sr=requests.get(source,headers=H,timeout=60)
+                  sr.raise_for_status()
                   soup=BeautifulSoup(sr.text,'html.parser')
               except Exception as e:
-                  print('Warning: source failed',source,e); continue
+                  print('Warning: source failed',source,e)
+                  continue
 
               rows=soup.select('tr')
               if not rows:
                   rows=soup.select('[class*="event"],[class*="match"],[class*="listing"],[href*="/events/"]')
 
+              source_zone=ZoneInfo(source_tz)
               for el in rows:
                   row=' '.join(el.stripped_strings)
-                  tm=re.search(r'\\b([01]?\\d|2[0-3]):[0-5]\\d\\b',row)
-                  if not tm: continue
+                  tm=re.search(r'\b([01]?\d|2[0-3]):[0-5]\d\b',row)
+                  if not tm:
+                      continue
                   hhmm=tm.group(0)
                   anchors=[a.get_text(' ',strip=True) for a in el.find_all('a')]
                   match=find_channel(row,anchors)
-                  if not match: continue
+                  if not match:
+                      continue
                   display,url=match
                   title=title_from(anchors,display,row,hhmm)
-                  if not title or len(title)>220: continue
+                  if not title or len(title)>220:
+                      continue
                   h,m=map(int,hhmm.split(':'))
-                  dt=now.replace(hour=h,minute=m,second=0,microsecond=0)
-                  events.append((dt,title,display,url))
+                  local_dt=datetime(today.year,today.month,today.day,h,m,tzinfo=source_zone)
+                  uk_dt=local_dt.astimezone(ZoneInfo('Europe/London'))
+                  events.append((uk_dt,title,display,url,source_name))
 
-          selected=[]; seen=set()
-          for dt,title,display,url in sorted(events,key=lambda x:(x[0],x[1])):
-              key=(dt.strftime('%H:%M'),re.sub(r'\\W+','',norm(title)),norm(display))
-              if key in seen: continue
-              seen.add(key); selected.append((dt,title,display,url))
+          selected=[]
+          seen=set()
+          for dt,title,display,url,source_name in sorted(events,key=lambda x:(x[0],x[1],x[2])):
+              if dt.date()!=today:
+                  continue
+              key=(dt.strftime('%H:%M'),re.sub(r'\W+','',norm(title)),norm(display))
+              if key in seen:
+                  continue
+              seen.add(key)
+              selected.append((dt,title,display,url,source_name))
 
           live=['# --- AUTO-GENERATED LIVE SPORTS ---']
-          for dt,title,display,url in selected:
+          for dt,title,display,url,source_name in selected:
               live += [f'#EXTINF:-1 group-title="🔴 LIVE TODAY",{dt:%H:%M} • {title} • {display}',url]
 
-          out=[]; i=0; inserted=False
+          out=[]
+          i=0
+          inserted=False
           while i<len(lines):
               if lines[i].startswith('#EXTINF:') and 'group-title="🔴 LIVE TODAY"' in lines[i]:
-                  if not inserted: out.extend(live); inserted=True
-                  i+=2; continue
-              out.append(lines[i]); i+=1
+                  if not inserted:
+                      out.extend(live)
+                      inserted=True
+                  i+=2
+                  continue
+              out.append(lines[i])
+              i+=1
+
           if not inserted:
-              pos=1 if out and out[0].startswith('#EXTM3U') else 0; out[pos:pos]=live+['']
+              pos=1 if out and out[0].startswith('#EXTM3U') else 0
+              out[pos:pos]=live+['']
 
           os.makedirs('deploy',exist_ok=True)
-          open('deploy/playlist.m3u','w',encoding='utf-8').write('\\n'.join(out).rstrip()+'\\n')
-          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\\n  Content-Type: text/plain; charset=utf-8\\n')
+          open('deploy/playlist.m3u','w',encoding='utf-8').write('\n'.join(out).rstrip()+'\n')
+          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
           open('deploy/index.html','w',encoding='utf-8').write('<!doctype html><title>TiviMate Playlist</title>')
-          print(f'Created {len(selected)} live events with matching channels from {len(sources)} schedule sources.')
+
+          print(f'Created {len(selected)} live events with matching existing channels from {len(sources)} schedule sources.')
+          print('Sample matches:')
+          for dt,title,display,url,source_name in selected[:15]:
+              print(f'  {dt:%H:%M} | {title} | {display} | {source_name}')
           PY
 
       - name: Deploy updated playlist to Netlify
