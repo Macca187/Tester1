@@ -1,0 +1,109 @@
+name: Fix exact LIVE TODAY broadcaster channels
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 * * * *'
+
+permissions:
+  contents: read
+
+env:
+  PLAYLIST_URL: https://nimble-gnome-675066.netlify.app/playlist.m3u
+  SOURCE_PLAYLIST_URL: https://uk-tivimate-playlist.netlify.app/playlist.m3u
+  NETLIFY_SITE_ID: 34ea0489-94c2-47e6-98dc-2be3abab17dd
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install tools
+        run: |
+          python -m pip install --disable-pip-version-check requests
+          npm install -g netlify-cli
+
+      - name: Apply exact verified channel mappings
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os,re,requests,html
+
+          def norm(s):
+              s=html.unescape(s or '').upper()
+              return re.sub(r'\s+',' ',re.sub(r'[^A-Z0-9+]+',' ',s)).strip()
+
+          current=requests.get(os.environ['PLAYLIST_URL'],timeout=90)
+          current.raise_for_status()
+          lines=current.text.replace('\r\n','\n').replace('\r','\n').splitlines()
+
+          source=requests.get(os.environ['SOURCE_PLAYLIST_URL'],timeout=90)
+          source.raise_for_status()
+          src=source.text.replace('\r\n','\n').replace('\r','\n').splitlines()
+
+          # Exact UK broadcaster assignments verified against Live Soccer TV for 17 Sep 2026.
+          # The code requires the numbered channel itself; it never substitutes another TNT/Sky channel.
+          mappings={
+            ('LILLESTROM','TORREENSE'):'TNT SPORTS 9',
+            ('JUVENTUS','NEC'):'TNT SPORTS 4',
+            ('VIKTORIA PLZEN','UNION SAINT GILLOISE'):'TNT SPORTS 8',
+            ('CRYSTAL PALACE','LECH POZNAN'):'TNT SPORTS 1',
+            ('CELTIC','FERENCVAROS'):'TNT SPORTS 3',
+            ('BESIKTAS','OLYMPIQUE MARSEILLE'):'TNT SPORTS 7',
+            ('REAL SOCIEDAD','AFC BOURNEMOUTH'):'TNT SPORTS 2',
+            ('OFI','HOFFENHEIM'):'TNT SPORTS 4',
+            ('LEVSKI SOFIA','SALZBURG'):'TNT SPORTS 6',
+            ('MANCHESTER CITY','NORWICH CITY'):'SKY SPORTS+',
+            ('AFC WIMBLEDON','MILTON KEYNES DONS'):'SKY SPORTS FOOTBALL',
+          }
+
+          # Build exact channel -> URL index from the private/current source playlist.
+          channel_url={}
+          for i in range(len(src)-1):
+              if not src[i].startswith('#EXTINF:'): continue
+              if i+1>=len(src): continue
+              name=src[i].split(',',1)[1].strip() if ',' in src[i] else ''
+              url=src[i+1].strip()
+              if url.startswith(('http://','https://')):
+                  channel_url.setdefault(norm(name),(name,url))
+
+          changed=[]
+          for i in range(len(lines)-1):
+              if not lines[i].startswith('#EXTINF:') or i+1>=len(lines): continue
+              info=lines[i]
+              if 'LIVE TODAY' not in info.upper(): continue
+              title=info.split(',',1)[1] if ',' in info else ''
+              x=norm(title)
+              for (home,away),channel in mappings.items():
+                  if home in x and away in x:
+                      exact=channel_url.get(norm(channel))
+                      if not exact:
+                          raise SystemExit(f'Exact channel not found in source playlist: {channel}. Refusing to guess.')
+                      cname,curl=exact
+                      title=re.sub(r'\s*•\s*[^•]+\s*$','',title).strip()
+                      lines[i]=info.split(',',1)[0]+','+title+' • '+cname
+                      lines[i+1]=curl
+                      changed.append(f'{home} vs {away} -> {cname}')
+                      break
+
+          if not changed:
+              print('No matching LIVE TODAY fixtures needed an exact-channel repair.')
+              raise SystemExit(0)
+
+          print('EXACT CHANNEL REPAIRS:')
+          for x in changed: print(x)
+
+          os.makedirs('deploy',exist_ok=True)
+          with open('deploy/playlist.m3u','w',encoding='utf-8') as f:
+              f.write('\n'.join(lines)+'\n')
+          with open('deploy/_headers','w',encoding='utf-8') as f:
+              f.write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
+          with open('deploy/index.html','w',encoding='utf-8') as f:
+              f.write('<!doctype html><meta charset="utf-8"><title>TiviMate Sports Playlist</title>')
+          PY
+
+      - name: Deploy repaired playlist
+        if: success()
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        run: netlify deploy --dir=deploy --prod --site="$NETLIFY_SITE_ID"
