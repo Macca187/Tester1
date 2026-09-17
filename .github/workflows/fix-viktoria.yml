@@ -1,0 +1,90 @@
+name: Fix verified LIVE TODAY broadcaster mappings
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '10 * * * *'
+
+permissions:
+  contents: read
+
+env:
+  PLAYLIST_URL: https://nimble-gnome-675066.netlify.app/playlist.m3u
+  NETLIFY_SITE_ID: 34ea0489-94c2-47e6-98dc-2be3abab17dd
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install tools
+        run: |
+          python -m pip install --disable-pip-version-check requests
+          npm install -g netlify-cli
+
+      - name: Repair verified fixtures without exposing stream URLs
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os,re,requests
+
+          url=os.environ['PLAYLIST_URL']
+          r=requests.get(url,timeout=90)
+          r.raise_for_status()
+          lines=r.text.replace('\r\n','\n').replace('\r','\n').splitlines()
+
+          def norm(s):
+              import html
+              s=html.unescape(s or '').upper()
+              return re.sub(r'\s+',' ',re.sub(r'[^A-Z0-9+]+',' ',s)).strip()
+
+          # Exact verified UK broadcaster from Live Soccer TV:
+          # Viktoria Plzen vs Union Saint-Gilloise -> TNT Sports 8.
+          # Never substitute TNT Sports 1/2/3/etc.
+          tnt8_url=None
+          for i in range(len(lines)-1):
+              if lines[i].startswith('#EXTINF:') and i+1<len(lines):
+                  name=lines[i].split(',',1)[1].strip() if ',' in lines[i] else ''
+                  if norm(name)=='TNT SPORTS 8':
+                      tnt8_url=lines[i+1].strip()
+                      break
+          if not tnt8_url:
+              raise SystemExit('TNT Sports 8 was not found in the current sports playlist; refusing to guess.')
+
+          changed=False
+          for i in range(len(lines)-1):
+              if not lines[i].startswith('#EXTINF:') or i+1>=len(lines):
+                  continue
+              info=lines[i]
+              if 'LIVE TODAY' not in info.upper():
+                  continue
+              title=info.split(',',1)[1] if ',' in info else ''
+              x=norm(title)
+              if 'VIKTORIA PLZEN' in x and 'UNION SAINT GILLOISE' in x:
+                  # Keep the event title/time, but force the broadcaster label and stream URL.
+                  title=re.sub(r'\s*•\s*[^•]+\s*$','',title).strip()
+                  prefix=info.split(',',1)[0]
+                  lines[i]=prefix+','+title+' • TNT Sports 8'
+                  lines[i+1]=tnt8_url
+                  changed=True
+                  print('REPAIRED: Viktoria Plzen vs Union Saint-Gilloise -> TNT Sports 8')
+
+          if not changed:
+              print('No Viktoria LIVE TODAY entry found; no change required.')
+              raise SystemExit(0)
+
+          os.makedirs('deploy',exist_ok=True)
+          with open('deploy/playlist.m3u','w',encoding='utf-8') as f:
+              f.write('\n'.join(lines)+'\n')
+          with open('deploy/_headers','w',encoding='utf-8') as f:
+              f.write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
+          with open('deploy/index.html','w',encoding='utf-8') as f:
+              f.write('<!doctype html><meta charset="utf-8"><title>TiviMate Sports Playlist</title>')
+          PY
+
+      - name: Deploy repaired playlist
+        if: success()
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        run: |
+          if [ -d deploy ]; then netlify deploy --dir=deploy --prod --site="$NETLIFY_SITE_ID"; fi
