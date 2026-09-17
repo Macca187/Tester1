@@ -81,6 +81,23 @@ jobs:
               print('SAFETY STOP: source did not contain enough sports channels; nothing will be deployed.')
               sys.exit(1)
 
+          # Hard broadcaster overrides for verified fixtures. These are only used when
+          # Live Soccer TV is temporarily unavailable, and they require an exact
+          # broadcaster/channel match from the user's existing playlist.
+          FIXED_EVENT_CHANNELS={
+              ('CRYSTAL PALACE','LECH POZNAN'):'TNT SPORTS 1',
+              ('CRYSTAL PALACE','LECH POZNAN'):'TNT SPORTS 1',
+          }
+
+          def exact_channel(channel_name):
+              target=norm(channel_name)
+              candidates=[]
+              for n,url,g in entries:
+                  if norm(n)==target:
+                      c=country(g,n); rank={'UK':0,'Australia':1,'Canada':2,'USA':3}.get(c,9)
+                      if rank<9: candidates.append((rank,n,url,g))
+              return min(candidates,key=lambda z:z[0]) if candidates else None
+
           events=[]
           today=datetime.now(ZoneInfo('Europe/London')).date()
           try:
@@ -121,7 +138,24 @@ jobs:
               for dt,title,n,g in sorted(events,key=lambda z:z[0]):
                   out += [f'#EXTINF:-1 group-title="🔴 LIVE TODAY",{dt:%H:%M} • {title} • {n}', next(url for nn,url,gg in entries if nn==n and gg==g)]
           else:
-              out += [x for pair in live_old for x in pair]
+              # Live Soccer TV may block automated requests. Preserve the existing
+              # events, but repair any verified fixture whose broadcaster is known.
+              for info,url in live_old:
+                  text=norm(info)
+                  replacement=None
+                  for (home,away),channel in FIXED_EVENT_CHANNELS.items():
+                      if home in text and away in text:
+                          replacement=exact_channel(channel)
+                          if replacement:
+                              n2,url2,g2=replacement
+                              prefix=info.split(',',1)[0] if ',' in info else '#EXTINF:-1 group-title="🔴 LIVE TODAY"'
+                              existing_title=info.split(',',1)[1].strip() if ',' in info else ''
+                              existing_title=re.sub(r'\s*•\s*[^•]+\s*$','',existing_title)
+                              info=f'{prefix},{existing_title} • {n2}'
+                              url=url2
+                              print('REPAIRED LIVE EVENT:',home,'vs',away,'->',n2)
+                          break
+                  out += [info,url]
 
           for n,url,g in sorted(entries,key=lambda z:(country(z[2],z[0]),sport_type(z[2],z[0]),norm(z[0]))):
               out += [f'#EXTINF:-1 group-title="Sports - {country(g,n)} - {sport_type(g,n)}",{n}',url]
