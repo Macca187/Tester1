@@ -43,18 +43,18 @@ jobs:
 
           r=requests.get(os.environ['PLAYLIST_URL'],headers=H,timeout=60)
           r.raise_for_status()
-          text=r.text.replace('\r\n','\n').replace('\r','\n')
-          lines=text.split('\n')
+          text=r.text.replace('\\r\\n','\\n').replace('\\r','\\n')
+          lines=text.split('\\n')
 
           def norm(s):
             s=html.unescape(s or '').upper()
             s=s.replace('ᴴᴰ',' ').replace('ᴿᴬᵂ',' ').replace('ᵁᴴᴰ',' ')
-            s=re.sub(r'\b(HEVC|8K|4K|SD|HD|IRELAND|EVENT|EXCLUSIVE|ULTRA HDR)\b',' ',s)
-            s=re.sub(r'\b(NOW|PRIME|VIP|UK|US|CA|AU):',' ',s)
-            s=re.sub(r'^\s*(CA EN|CA FR)\s*:\s*',' ',s)
-            s=re.sub(r'^\s*(US|AU)\s*\|\s*',' ',s)
+            s=re.sub(r'\\b(HEVC|8K|4K|SD|HD|IRELAND|EVENT|EXCLUSIVE|ULTRA HDR)\\b',' ',s)
+            s=re.sub(r'\\b(NOW|PRIME|VIP|UK|US|CA|AU):',' ',s)
+            s=re.sub(r'^\\s*(CA EN|CA FR)\\s*:\\s*',' ',s)
+            s=re.sub(r'^\\s*(US|AU)\\s*\\|\\s*',' ',s)
             s=re.sub(r'[^A-Z0-9+]+',' ',s)
-            return re.sub(r'\s+',' ',s).strip()
+            return re.sub(r'\\s+',' ',s).strip()
 
           def bad_channel(display):
             n=norm(display)
@@ -73,51 +73,66 @@ jobs:
               i+=2
             else:
               i+=1
-          entries.sort(key=lambda x:-len(x[0]))
 
           aliases={
-            'ESPN2':'ESPN 2',
-            'TSN PREMIUM':'TSN',
-            'DAZN USA':'DAZN',
-            'DAZN CANADA':'DAZN',
-            'FOX SPORTS AUSTRALIA':'FOX SPORTS',
-            'TNT SPORTS PLUS':'TNT SPORTS+'
+            'ESPN2':'ESPN 2','TSN PREMIUM':'TSN','DAZN USA':'DAZN','DAZN CANADA':'DAZN',
+            'FOX SPORTS AUSTRALIA':'FOX SPORTS','TNT SPORTS PLUS':'TNT SPORTS+'
           }
+
+          broadcaster_re=r'(?:TNT SPORTS(?: \\d+)?|SKY SPORTS(?:\\+| FOOTBALL| GOLF| CRICKET| MAIN EVENT| PREMIER LEAGUE| ARENA| ACTION| TENNIS)?|ESPN(?: \\d+)?|ESPN\\+|TSN(?: \\d+)?|SPORTSNET(?: \\d+)?(?: PLUS)?|FOX SPORTS(?: \\d+)?|FOX SPORTS 1|FOX SPORTS 2|FOX SOCCER PLUS|CBS SPORTS NETWORK|DAZN(?: USA| CANADA)?|BEIN SPORTS(?: \\d+)?|PREMIER SPORTS(?: \\d+)?|STAN SPORT|WST PLAY|HBO MAX|JIOHOTSTAR|NWSL\\+|PARAMOUNT\\+|NBC SPORTS|USA NETWORK|PEACOCK|TELEMUNDO|UNIVERSO|APPLE TV\\+|FUBO|FUBOTV)'
 
           def channel_number(s):
             n=norm(s)
-            m=re.search(r'\b(?:TNT SPORTS|SKY SPORTS|ESPN|TSN|SPORTSNET|FOX SPORTS)\s*(\d+)\b',n)
+            m=re.search(r'\\b(?:TNT SPORTS|SKY SPORTS|ESPN|TSN|SPORTSNET|FOX SPORTS)\\s*(\\d+)\\b',n)
             return m.group(1) if m else None
+
+          def region_rank(display):
+            d=(display or '').upper().strip()
+            # UK is preferred. Regional labels are used for the fallback pool.
+            if re.match(r'^(UK\\s*[|:]|UK -)',d):
+              return 0
+            if re.match(r'^(US\\s*[|:]|US -|CA(?: EN| FR)?\\s*[|:]|CA -|AU\\s*[|:]|AU -)',d):
+              return 1
+            # The base playlist is UK-first, so an unlabelled exact channel is treated as UK.
+            if not re.match(r'^(?:[A-Z]{2}(?: EN| FR)?\\s*[|:]|[A-Z]{2} -)',d):
+              return 0
+            return 2
 
           def find_channel(row_text,anchors):
             row=norm(row_text)
             raw_hints=[]
             for a in anchors:
               x=norm(a)
-              if x and any(k in x for k in ('TNT SPORTS','SKY SPORTS','ESPN','TSN','SPORTSNET','FOX SPORTS','CBS SPORTS','DAZN','BEIN SPORTS','PREMIER SPORTS','STAN SPORT','HBO MAX','WST PLAY','JIOHOTSTAR','NWSL+')):
+              if x and re.search(broadcaster_re,x):
                 raw_hints.append(x)
-            known=re.findall(r'(?:TNT SPORTS(?: \d+)?|SKY SPORTS(?:\+| FOOTBALL| GOLF| CRICKET| MAIN EVENT)?|ESPN(?: \d+)?|TSN(?: \d+)?|SPORTSNET(?: \d+)?|FOX SPORTS(?: \d+)?|CBS SPORTS NETWORK|DAZN|BEIN SPORTS(?: \d+)?|PREMIER SPORTS(?: \d+)?|STAN SPORT|WST PLAY|HBO MAX|JIOHOTSTAR|NWSL\+)',row)
+            known=re.findall(broadcaster_re,row)
             raw_hints += [x for x in known if x not in raw_hints]
 
             seen_hints=set()
+            candidates=[]
             for hint in raw_hints:
               target=aliases.get(hint,hint)
               if target in seen_hints:
                 continue
               seen_hints.add(target)
               hn=channel_number(target)
-              exact=[]
               for dn,display,url in entries:
-                if bad_channel(display):
-                  continue
-                if dn != target:
+                if bad_channel(display) or dn != target:
                   continue
                 if hn and channel_number(dn) != hn:
                   continue
-                exact.append((display,url))
-              if exact:
-                return exact[0]
-            return None
+                candidates.append((region_rank(display),display,url,target))
+
+            if not candidates:
+              return None
+
+            # First use a UK exact channel. Only if none exists, use an AU/CA/US exact channel.
+            # Never fall back to another numbered channel or to an unrelated broadcaster.
+            candidates.sort(key=lambda x:(x[0], entries.index(next(e for e in entries if e[1]==x[1]))))
+            best=candidates[0]
+            if best[0] > 1:
+              return None
+            return best[1],best[2]
 
           def title_from(row,anchors,display,hhmm):
             teams=[]
@@ -125,31 +140,26 @@ jobs:
               x=a.strip()
               if not x: continue
               if norm(x)==norm(display): break
-              if re.search(r'\s+(v|vs|@)\s+',x,re.I): teams.append(x)
+              if re.search(r'\\s+(v|vs|@)\\s+',x,re.I): teams.append(x)
             if teams: return teams[0]
-            x=re.sub(r'\b'+re.escape(hhmm)+r'\b','',row,flags=re.I)
-            return re.sub(r'\s+',' ',x).strip()
+            x=re.sub(r'\\b'+re.escape(hhmm)+r'\\b','',row,flags=re.I)
+            return re.sub(r'\\s+',' ',x).strip()
 
           now=datetime.now(ZoneInfo('Europe/London'))
           today=now.date()
           events=[]
-          sources=[
-            ('live-soccer-tv',f'https://www.livesoccertv.com/schedules/{today:%Y-%m-%d}/','America/New_York'),
-          ]
+          source=('live-soccer-tv',f'https://www.livesoccertv.com/schedules/{today:%Y-%m-%d}/','America/New_York')
 
-          for source_name,source,source_tz in sources:
-            try:
-              sr=requests.get(source,headers=H,timeout=60)
-              sr.raise_for_status()
-              soup=BeautifulSoup(sr.text,'html.parser')
-            except Exception as e:
-              print('Warning: source failed',source,e)
-              continue
+          try:
+            source_name,source_url,source_tz=source
+            sr=requests.get(source_url,headers=H,timeout=60)
+            sr.raise_for_status()
+            soup=BeautifulSoup(sr.text,'html.parser')
             rows=soup.select('tr') or soup.select('[class*="event"],[class*="match"],[class*="listing"],[href*="/events/"]')
             source_zone=ZoneInfo(source_tz)
             for el in rows:
               row=' '.join(el.stripped_strings)
-              tm=re.search(r'\b([01]?\d|2[0-3]):[0-5]\d\b',row)
+              tm=re.search(r'\\b([01]?\\d|2[0-3]):[0-5]\\d\\b',row)
               if not tm: continue
               hhmm=tm.group(0)
               anchors=[a.get_text(' ',strip=True) for a in el.find_all('a')]
@@ -162,12 +172,14 @@ jobs:
               local_dt=datetime(today.year,today.month,today.day,h,m,tzinfo=source_zone)
               uk_dt=local_dt.astimezone(ZoneInfo('Europe/London'))
               events.append((uk_dt,title,display,url,source_name))
+          except Exception as e:
+            print('Warning: Live Soccer TV failed',e)
 
           selected=[]
           seen=set()
           for dt,title,display,url,source_name in sorted(events,key=lambda x:(x[0],x[1],x[2])):
             if dt.date()!=today: continue
-            key=(dt.strftime('%H:%M'),re.sub(r'\W+','',norm(title)),norm(display))
+            key=(dt.strftime('%H:%M'),re.sub(r'\\W+','',norm(title)),norm(display))
             if key in seen: continue
             seen.add(key)
             selected.append((dt,title,display,url,source_name))
@@ -196,14 +208,14 @@ jobs:
             out[pos:pos]=live+['']
 
           os.makedirs('deploy',exist_ok=True)
-          open('deploy/playlist.m3u','w',encoding='utf-8').write('\n'.join(out).rstrip()+'\n')
-          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
+          open('deploy/playlist.m3u','w',encoding='utf-8').write('\\n'.join(out).rstrip()+'\\n')
+          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\\n  Content-Type: text/plain; charset=utf-8\\n')
           open('deploy/index.html','w',encoding='utf-8').write('<!doctype html><title>TiviMate Playlist</title>')
 
-          print(f'Created {len(selected)} live football events using Live Soccer TV and exact broadcaster/channel matching.')
-          print('Sample exact matches:')
+          print(f'Created {len(selected)} live football events from Live Soccer TV.')
+          print('Channel priority: UK exact match -> AU/CA/US exact match -> otherwise omit.')
           for dt,title,display,url,source_name in selected[:30]:
-            print(f'  {dt:%H:%M} | {title} | {display} | {source_name}')
+            print(f'  {dt:%H:%M} | {title} | {display}')
           PY
 
       - name: Deploy updated playlist to Netlify
