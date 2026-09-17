@@ -6,8 +6,7 @@ on:
     branches:
       - master
   schedule:
-    - cron: '30 5 * * *'
-    - cron: '30 16 * * *'
+    - cron: '0 * * * *'
 
 permissions:
   contents: read
@@ -36,17 +35,23 @@ jobs:
           import requests
           from bs4 import BeautifulSoup
 
-          H={'User-Agent':'Mozilla/5.0 (TiviMate playlist updater)'}
+          H={
+              'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36',
+              'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language':'en-GB,en;q=0.9'
+          }
           r=requests.get(os.environ['PLAYLIST_URL'],headers=H,timeout=60); r.raise_for_status()
-          text=r.text.replace('\r\n','\n').replace('\r','\n'); lines=text.split('\n')
+          text=r.text.replace('\\r\\n','\\n').replace('\\r','\\n'); lines=text.split('\\n')
 
           def norm(s):
               s=html.unescape(s or '').upper()
               s=s.replace('ᴴᴰ',' ').replace('ᴿᴬᵂ',' ').replace('ᵁᴴᴰ',' ')
-              s=re.sub(r'\b(HEVC|4K|SD|HD|IRELAND|EVENT)\b',' ',s)
-              s=re.sub(r'\b(NOW|PRIME|VIP|UK):',' ',s)
+              # Remove regional/provider prefixes so AU: ESPN 1 HD, CA| TSN 1, etc.
+              s=re.sub(r'\\b(?:UK|US|CA|AU)\\s*[:|]\\s*',' ',s)
+              s=re.sub(r'\\b(?:HEVC|4K|UHD|SD|HD|IRELAND|EVENT)\\b',' ',s)
+              s=re.sub(r'\\b(?:NOW|PRIME|VIP)\\s*[:|]',' ',s)
               s=re.sub(r'[^A-Z0-9+]+',' ',s)
-              return re.sub(r'\s+',' ',s).strip()
+              return re.sub(r'\\s+',' ',s).strip()
 
           entries=[]; i=0
           while i<len(lines):
@@ -58,15 +63,45 @@ jobs:
                       if n: entries.append((n,display,url))
                   i+=2
               else: i+=1
+
+          # Prefer more specific channel names and exact matches.
           entries.sort(key=lambda x:-len(x[0]))
+
+          aliases={
+              'FOX SPORTS 1':'FOX SPORTS 1',
+              'FOX SPORTS 2':'FOX SPORTS 2',
+              'ESPN 1':'ESPN 1',
+              'ESPN 2':'ESPN 2',
+              'TSN 1':'TSN 1','TSN 2':'TSN 2','TSN 3':'TSN 3','TSN 4':'TSN 4','TSN 5':'TSN 5',
+              'SPORTSNET':'SPORTSNET',
+              'SPORTSNET ONE':'SPORTSNET ONE',
+              'SPORTSNET ONTARIO':'SPORTSNET ONTARIO',
+              'SPORTSNET WEST':'SPORTSNET WEST',
+              'SPORTSNET PACIFIC':'SPORTSNET PACIFIC',
+              'SPORTSNET EAST':'SPORTSNET EAST',
+          }
 
           def find_channel(row_text,anchors):
               ans={norm(a) for a in anchors if norm(a)}
               row=norm(row_text)
+              # Exact anchor match first.
               for n,display,url in entries:
                   if n in ans: return display,url
+              # Exact aliases next.
+              for alias in aliases:
+                  if alias in ans:
+                      for n,display,url in entries:
+                          if n==norm(alias): return display,url
+              # Whole-name match against the row.
               for n,display,url in entries:
-                  if len(n)>=5 and re.search(r'(?<![A-Z0-9])'+re.escape(n)+r'(?![A-Z0-9])',row): return display,url
+                  if len(n)>=5 and re.search(r'(?<![A-Z0-9])'+re.escape(n)+r'(?![A-Z0-9])',row):
+                      return display,url
+              # Finally, broadcaster contained in channel name or vice versa, but only for distinctive names.
+              for a in ans:
+                  if len(a)<5: continue
+                  for n,display,url in entries:
+                      if (a in n or n in a) and len(min(a,n,key=len))>=5:
+                          return display,url
               return None
 
           def title_from(anchors,display,row_text,time):
@@ -75,9 +110,9 @@ jobs:
                   an=norm(a)
                   if an==bn: break
                   if a and an!=norm(time) and a not in parts: parts.append(a)
-              if parts: return re.sub(r'\s+',' ',' v '.join(parts[:2])).strip()
-              x=re.sub(r'\b'+re.escape(time)+r'\b',' ',row_text)
-              return re.sub(r'\s+',' ',x).strip()
+              if parts: return re.sub(r'\\s+',' ',' v '.join(parts[:2])).strip()
+              x=re.sub(r'\\b'+re.escape(time)+r'\\b',' ',row_text)
+              return re.sub(r'\\s+',' ',x).strip()
 
           now=datetime.now(ZoneInfo('Europe/London')); events=[]
           sources=[
@@ -99,7 +134,7 @@ jobs:
 
               for el in rows:
                   row=' '.join(el.stripped_strings)
-                  tm=re.search(r'\b([01]?\d|2[0-3]):[0-5]\d\b',row)
+                  tm=re.search(r'\\b([01]?\\d|2[0-3]):[0-5]\\d\\b',row)
                   if not tm: continue
                   hhmm=tm.group(0)
                   anchors=[a.get_text(' ',strip=True) for a in el.find_all('a')]
@@ -114,7 +149,7 @@ jobs:
 
           selected=[]; seen=set()
           for dt,title,display,url in sorted(events,key=lambda x:(x[0],x[1])):
-              key=(dt.strftime('%H:%M'),re.sub(r'\W+','',norm(title)))
+              key=(dt.strftime('%H:%M'),re.sub(r'\\W+','',norm(title)),norm(display))
               if key in seen: continue
               seen.add(key); selected.append((dt,title,display,url))
 
@@ -132,10 +167,10 @@ jobs:
               pos=1 if out and out[0].startswith('#EXTM3U') else 0; out[pos:pos]=live+['']
 
           os.makedirs('deploy',exist_ok=True)
-          open('deploy/playlist.m3u','w',encoding='utf-8').write('\n'.join(out).rstrip()+'\n')
-          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
+          open('deploy/playlist.m3u','w',encoding='utf-8').write('\\n'.join(out).rstrip()+'\\n')
+          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\\n  Content-Type: text/plain; charset=utf-8\\n')
           open('deploy/index.html','w',encoding='utf-8').write('<!doctype html><title>TiviMate Playlist</title>')
-          print(f'Created {len(selected)} live events with matching existing channels from {len(sources)} schedule sources.')
+          print(f'Created {len(selected)} live events with matching channels from {len(sources)} schedule sources.')
           PY
 
       - name: Deploy updated playlist to Netlify
