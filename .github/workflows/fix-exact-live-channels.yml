@@ -2,6 +2,8 @@ name: Fix exact LIVE TODAY broadcaster channels
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
   schedule:
     - cron: '20 * * * *'
 
@@ -57,7 +59,7 @@ jobs:
             ('AFC WIMBLEDON','MILTON KEYNES DONS'):'SKY SPORTS FOOTBALL',
           }
 
-          # Build exact channel -> URL index from the private/current source playlist.
+          # Build exact channel -> URL index from the existing source playlist.
           channel_url={}
           for i in range(len(src)-1):
               if not src[i].startswith('#EXTINF:'): continue
