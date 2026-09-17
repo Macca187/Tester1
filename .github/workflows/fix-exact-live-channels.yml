@@ -24,7 +24,7 @@ jobs:
           python -m pip install --disable-pip-version-check requests
           npm install -g netlify-cli
 
-      - name: Apply exact verified channel mappings
+      - name: Apply exact channels and playlist category order
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
         run: |
@@ -43,8 +43,6 @@ jobs:
           source.raise_for_status()
           src=source.text.replace('\r\n','\n').replace('\r','\n').splitlines()
 
-          # Exact UK broadcaster assignments verified against Live Soccer TV for 17 Sep 2026.
-          # The code requires the numbered channel itself; it never substitutes another TNT/Sky channel.
           mappings={
             ('LILLESTROM','TORREENSE'):'TNT SPORTS 9',
             ('JUVENTUS','NEC'):'TNT SPORTS 4',
@@ -59,11 +57,9 @@ jobs:
             ('AFC WIMBLEDON','MILTON KEYNES DONS'):'SKY SPORTS FOOTBALL',
           }
 
-          # Build exact channel -> URL index from the existing source playlist.
           channel_url={}
           for i in range(len(src)-1):
               if not src[i].startswith('#EXTINF:'): continue
-              if i+1>=len(src): continue
               name=src[i].split(',',1)[1].strip() if ',' in src[i] else ''
               url=src[i+1].strip()
               if url.startswith(('http://','https://')):
@@ -71,7 +67,7 @@ jobs:
 
           changed=[]
           for i in range(len(lines)-1):
-              if not lines[i].startswith('#EXTINF:') or i+1>=len(lines): continue
+              if not lines[i].startswith('#EXTINF:'): continue
               info=lines[i]
               if 'LIVE TODAY' not in info.upper(): continue
               title=info.split(',',1)[1] if ',' in info else ''
@@ -88,20 +84,63 @@ jobs:
                       changed.append(f'{home} vs {away} -> {cname}')
                       break
 
-          if not changed:
+          if changed:
+              print('EXACT CHANNEL REPAIRS:')
+              for x in changed: print(x)
+          else:
               print('No matching LIVE TODAY fixtures needed an exact-channel repair.')
-              raise SystemExit(0)
 
-          print('EXACT CHANNEL REPAIRS:')
-          for x in changed: print(x)
+          # Put LIVE TODAY first, then all UK categories, then USA, Canada,
+          # International. Other groups follow afterwards. Existing category
+          # order within each country is preserved.
+          entries=[]
+          i=0
+          while i < len(lines):
+              if lines[i].startswith('#EXTINF:') and i+1 < len(lines):
+                  entries.append(lines[i:i+2])
+                  i += 2
+              else:
+                  i += 1
+
+          def group_name(entry):
+              m=re.search(r'group-title="([^"]*)"',entry[0],re.I)
+              return m.group(1).strip() if m else ''
+
+          def country(group):
+              parts=[p.strip().upper() for p in group.split(' - ')]
+              return parts[1] if len(parts) >= 2 else ''
+
+          def is_live(entry):
+              return 'LIVE TODAY' in entry[0].upper()
+
+          rank={'UK':0,'USA':1,'CANADA':2,'INTERNATIONAL':3}
+          first_seen={}
+          for idx,entry in enumerate(entries):
+              g=group_name(entry)
+              if g not in first_seen: first_seen[g]=idx
+
+          indexed=list(enumerate(entries))
+          indexed.sort(key=lambda pair: (
+              0 if is_live(pair[1]) else 1,
+              0 if is_live(pair[1]) else rank.get(country(group_name(pair[1])),4),
+              -1 if is_live(pair[1]) else first_seen.get(group_name(pair[1]),pair[0]),
+              pair[0]
+          ))
+
+          ordered=[entry for _,entry in indexed]
+          out=['#EXTM3U']
+          for entry in ordered:
+              out.extend(entry)
 
           os.makedirs('deploy',exist_ok=True)
           with open('deploy/playlist.m3u','w',encoding='utf-8') as f:
-              f.write('\n'.join(lines)+'\n')
+              f.write('\n'.join(out)+'\n')
           with open('deploy/_headers','w',encoding='utf-8') as f:
               f.write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
           with open('deploy/index.html','w',encoding='utf-8') as f:
               f.write('<!doctype html><meta charset="utf-8"><title>TiviMate Sports Playlist</title>')
+
+          print('CATEGORY ORDER: LIVE TODAY -> UK -> USA -> CANADA -> INTERNATIONAL')
           PY
 
       - name: Deploy repaired playlist
