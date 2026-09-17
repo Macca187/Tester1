@@ -3,36 +3,236 @@ name: Update TiviMate playlist
 on:
   workflow_dispatch:
   schedule:
+    - cron: '30 5 * * *'
     - cron: '30 16 * * *'
+
+permissions:
+  contents: read
+
+env:
+  PLAYLIST_URL: https://nimble-gnome-675066.netlify.app/playlist.m3u
+  NETLIFY_SITE_ID: 7c0f8515-4491-4a5b-a20b-792cf83477d1
 
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - name: Download current playlist
+      - name: Install tools
         run: |
-          set -euo pipefail
-          curl -fsSL 'https://nimble-gnome-675066.netlify.app/playlist.m3u' -o playlist.m3u
-          test -s playlist.m3u
+          python -m pip install --disable-pip-version-check requests beautifulsoup4
+          npm install -g netlify-cli
 
-      - name: Prepare Netlify deploy
-        run: |
-          set -euo pipefail
-          mkdir deploy
-          cp playlist.m3u deploy/playlist.m3u
-          printf '%s\n' '<!doctype html><html><body></body></html>' > deploy/index.html
-          cd deploy
-          zip -q ../site.zip playlist.m3u index.html
-
-      - name: Deploy playlist to Netlify
+      - name: Build today's live sports section
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: 7c0f8515-4491-4a5b-a20b-792cf83477d1
         run: |
-          set -euo pipefail
-          test -n "$NETLIFY_AUTH_TOKEN"
-          curl --fail-with-body -X POST \
-            -H "Authorization: Bearer $NETLIFY_AUTH_TOKEN" \
-            -H 'Content-Type: application/zip' \
-            --data-binary @site.zip \
-            "https://api.netlify.com/api/v1/sites/$NETLIFY_SITE_ID/deploys"
+          python - <<'PY'
+          import os, re, html
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import requests
+          from bs4 import BeautifulSoup
+
+          playlist_url = os.environ['PLAYLIST_URL']
+          headers = {'User-Agent': 'Mozilla/5.0 (TiviMate playlist updater)'}
+          r = requests.get(playlist_url, headers=headers, timeout=60)
+          r.raise_for_status()
+          text = r.text.replace('\r\n', '\n').replace('\r', '\n')
+
+          # Parse all existing non-LIVE-TODAY entries. Their stream URLs are reused verbatim.
+          lines = text.split('\n')
+          entries = []
+          i = 0
+          while i < len(lines):
+              if lines[i].startswith('#EXTINF:') and i + 1 < len(lines):
+                  info, url = lines[i], lines[i+1]
+                  if 'group-title="🔴 LIVE TODAY"' not in info:
+                      display = info.split(',', 1)[1] if ',' in info else ''
+                      entries.append((display, info, url))
+                  i += 2
+              else:
+                  i += 1
+
+          def norm(s):
+              s = html.unescape(s).upper()
+              s = s.replace('ᴴᴰ','').replace('ᴿᴬᵂ','').replace('ᵁᴴᴰ','').replace('³⁸⁴⁰ᴾ','')
+              s = re.sub(r'\b(NOW|PRIME|VIP|UK):', '', s)
+              s = s.replace('TNT SPORTS', 'TNT SPORT')
+              s = re.sub(r'\b(HEVC|4K|SD|HD|IRELAND|EVENT)\b', ' ', s)
+              s = re.sub(r'\s+', ' ', s).strip()
+              return s
+
+          # Build candidate channel index, preferring the cleaner HD entries.
+          candidates = []
+          for display, info, url in entries:
+              n = norm(display)
+              if not n:
+                  continue
+              score = 0
+              if ' HD' in display.upper() or 'ᴴᴰ' in display: score += 5
+              if 'RAW' in display.upper() or 'ᴿᴬᵂ' in display: score -= 1
+              if 'SD' in display.upper(): score -= 2
+              candidates.append((n, score, display, info, url))
+
+          # Broadcaster aliases used by the UK schedule sources.
+          aliases = {
+              'TNT SPORTS': 'TNT SPORT',
+              'SKY SPORTS': 'SKY SPORTS',
+              'PREMIER SPORTS': 'PREMIER SPORTS',
+              'ITV4': 'ITV 4',
+              'ITV 4': 'ITV 4',
+              'SKY SPORTS ULTRA HDR': 'SKY SPORTS+',
+              'SKY SPORTS PLUS': 'SKY SPORTS+',
+          }
+
+          def channel_key(s):
+              s = norm(s)
+              s = s.replace('TNT SPORT', 'TNT SPORT')
+              return s
+
+          def choose_channel(broadcaster):
+              b = broadcaster.strip()
+              bnorm = channel_key(b)
+              bnorm = aliases.get(bnorm, bnorm)
+              # Exact normalized match first.
+              exact = [c for c in candidates if c[0] == bnorm]
+              if exact:
+                  exact.sort(key=lambda x: (-x[1], x[2]))
+                  return exact[0]
+              # Then allow a numbered channel to match the same base channel.
+              base = re.sub(r'\s+', ' ', bnorm)
+              possible = [c for c in candidates if c[0].startswith(base + ' ') or base.startswith(c[0] + ' ')]
+              if possible:
+                  # Never substitute an event-number channel for an explicitly numbered broadcaster.
+                  num = re.search(r'\b(\d+)\b', bnorm)
+                  if num:
+                      possible = [c for c in possible if re.search(r'\b' + re.escape(num.group(1)) + r'\b', c[0])] or possible
+                  possible.sort(key=lambda x: (-x[1], len(x[0]), x[2]))
+                  return possible[0]
+              return None
+
+          def clean_event_name(s):
+              s = html.unescape(s)
+              s = re.sub(r'\s+', ' ', s).strip()
+              return s
+
+          # WherestheMatch is used as the UK live-sports schedule. It covers 30+ sports
+          # and publishes UK-local times and broadcaster/channel listings.
+          now = datetime.now(ZoneInfo('Europe/London'))
+          url = 'https://www.wheresthematch.com/'
+          sr = requests.get(url, headers=headers, timeout=60)
+          sr.raise_for_status()
+          soup = BeautifulSoup(sr.text, 'html.parser')
+
+          known_broadcasters = sorted({c[0] for c in candidates if any(x in c[0] for x in ('SKY SPORTS','TNT SPORT','PREMIER SPORTS','ITV 4','BBC','CHANNEL 4','CHANNEL 5','RACING TV'))}, key=len, reverse=True)
+          # Include common WTM names that may map to a channel in the playlist.
+          common = ['Sky Sports Main Event','Sky Sports Football','Sky Sports Racing','Sky Sports Tennis','Sky Sports Cricket','Sky Sports Golf','Sky Sports Mix','Sky Sports+','TNT Sports 1','TNT Sports 2','TNT Sports 3','TNT Sports 4','TNT Sports 5','TNT Sports 6','TNT Sports 7','TNT Sports 8','TNT Sports 9','TNT Sports 10','TNT Sports Ultimate','Premier Sports 1','Premier Sports 2','ITV4','RacingTV','Racing TV','BBC One','BBC Two','Channel 4','Channel 5']
+          common_norm = {channel_key(x): x for x in common}
+
+          events = []
+          for tr in soup.select('tr'):
+              cells = tr.find_all('td')
+              if not cells:
+                  continue
+              row_text = ' '.join(tr.stripped_strings)
+              tm = re.search(r'\b(\d{1,2}:\d{2})\b', row_text)
+              if not tm:
+                  continue
+              hhmm = tm.group(1)
+              try:
+                  hour, minute = map(int, hhmm.split(':'))
+              except Exception:
+                  continue
+              if hour > 23:
+                  continue
+              anchors = [a.get_text(' ', strip=True) for a in tr.find_all('a')]
+              # Identify broadcaster anchors by matching known channel names.
+              broadcasters = []
+              for a in anchors:
+                  ak = channel_key(a)
+                  if ak in common_norm or any(ak == channel_key(x) for x in common):
+                      broadcasters.append(a)
+              if not broadcasters:
+                  # Fallback: scan row text for known broadcaster phrases.
+                  for x in common:
+                      if x.lower() in row_text.lower():
+                          broadcasters.append(x)
+              if not broadcasters:
+                  continue
+
+              # Event title: take the first meaningful anchor(s) before the first broadcaster.
+              title_parts = []
+              for a in anchors:
+                  if any(channel_key(a) == channel_key(b) for b in broadcasters):
+                      break
+                  if a and a not in title_parts:
+                      title_parts.append(a)
+              title = ' v '.join(title_parts[:2]) if title_parts else row_text
+              title = clean_event_name(title)
+              if not title:
+                  continue
+
+              dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+              events.append((dt, title, broadcasters))
+
+          # Deduplicate events and keep only events whose broadcaster exists in the playlist.
+          selected = []
+          seen = set()
+          for dt, title, broadcasters in sorted(events, key=lambda x: (x[0], x[1])):
+              matched = None
+              for b in broadcasters:
+                  c = choose_channel(b)
+                  if c:
+                      matched = (b, c)
+                      break
+              if not matched:
+                  continue
+              b, c = matched
+              key = (dt.strftime('%H:%M'), re.sub(r'\W+', '', title.lower()))
+              if key in seen:
+                  continue
+              seen.add(key)
+              selected.append((dt, title, b, c))
+
+          # Build LIVE TODAY entries using the existing working stream URL verbatim.
+          live_lines = ['# --- AUTO-GENERATED LIVE SPORTS ---']
+          for dt, title, broadcaster, c in selected:
+              _, _, display, info, stream_url = c
+              channel_label = display
+              channel_label = re.sub(r'^(NOW|PRIME|VIP|UK):\s*', '', channel_label, flags=re.I).strip()
+              channel_label = re.sub(r'\s+ᴴᴰ.*$', ' ᴴᴰ', channel_label).strip()
+              label = f'#EXTINF:-1 group-title="🔴 LIVE TODAY",{dt.strftime("%H:%M")} • {title} • {channel_label}'
+              live_lines.extend([label, stream_url])
+
+          # Remove the previous LIVE TODAY block while preserving every other entry exactly.
+          out = []
+          i = 0
+          inserted = False
+          while i < len(lines):
+              if lines[i].startswith('#EXTINF:') and 'group-title="🔴 LIVE TODAY"' in lines[i]:
+                  if not inserted:
+                      out.extend(live_lines)
+                      inserted = True
+                  i += 2
+                  continue
+              out.append(lines[i])
+              i += 1
+
+          if not inserted:
+              # Put it after the #EXTM3U header if the section somehow disappeared.
+              pos = 1 if out and out[0].startswith('#EXTM3U') else 0
+              out[pos:pos] = live_lines + ['']
+
+          final_text = '\n'.join(out).rstrip() + '\n'
+          os.makedirs('deploy', exist_ok=True)
+          open('deploy/playlist.m3u','w',encoding='utf-8').write(final_text)
+          open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
+          open('deploy/index.html','w',encoding='utf-8').write('<!doctype html><title>TiviMate Playlist</title>')
+          print(f'Created {len(selected)} live events with matching existing channels.')
+          PY
+
+      - name: Deploy updated playlist to Netlify
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        run: |
+          netlify deploy --dir=deploy --prod --site="$NETLIFY_SITE_ID"
