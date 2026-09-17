@@ -80,23 +80,36 @@ jobs:
               return re.sub(r'\s+',' ',x).strip()
 
           now=datetime.now(ZoneInfo('Europe/London')); events=[]
-          for source in ['https://www.wheresthematch.com/','https://tv-guide-listings.co.uk/sport/']:
+          sources=[
+              'https://www.wheresthematch.com/',
+              'https://tv-guide-listings.co.uk/sport/',
+              'https://www.whatsportson.com/'
+          ]
+
+          for source in sources:
               try:
                   sr=requests.get(source,headers=H,timeout=60); sr.raise_for_status()
                   soup=BeautifulSoup(sr.text,'html.parser')
               except Exception as e:
                   print('Warning: source failed',source,e); continue
-              rows=soup.select('tr') or soup.select('[class*="event"],[class*="match"],[class*="listing"]')
+
+              rows=soup.select('tr')
+              if not rows:
+                  rows=soup.select('[class*="event"],[class*="match"],[class*="listing"],[href*="/events/"]')
+
               for el in rows:
                   row=' '.join(el.stripped_strings)
                   tm=re.search(r'\b([01]?\d|2[0-3]):[0-5]\d\b',row)
                   if not tm: continue
-                  hhmm=tm.group(0); anchors=[a.get_text(' ',strip=True) for a in el.find_all('a')]
+                  hhmm=tm.group(0)
+                  anchors=[a.get_text(' ',strip=True) for a in el.find_all('a')]
                   match=find_channel(row,anchors)
                   if not match: continue
-                  display,url=match; title=title_from(anchors,display,row,hhmm)
+                  display,url=match
+                  title=title_from(anchors,display,row,hhmm)
                   if not title or len(title)>220: continue
-                  h,m=map(int,hhmm.split(':')); dt=now.replace(hour=h,minute=m,second=0,microsecond=0)
+                  h,m=map(int,hhmm.split(':'))
+                  dt=now.replace(hour=h,minute=m,second=0,microsecond=0)
                   events.append((dt,title,display,url))
 
           selected=[]; seen=set()
@@ -122,7 +135,7 @@ jobs:
           open('deploy/playlist.m3u','w',encoding='utf-8').write('\n'.join(out).rstrip()+'\n')
           open('deploy/_headers','w',encoding='utf-8').write('/playlist.m3u\n  Content-Type: text/plain; charset=utf-8\n')
           open('deploy/index.html','w',encoding='utf-8').write('<!doctype html><title>TiviMate Playlist</title>')
-          print(f'Created {len(selected)} live events with matching existing channels.')
+          print(f'Created {len(selected)} live events with matching existing channels from {len(sources)} schedule sources.')
           PY
 
       - name: Deploy updated playlist to Netlify
